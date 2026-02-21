@@ -14,6 +14,22 @@ Run: Open PowerShell as Administrator (or normal if PostgreSQL accessible) and r
 
 Set-StrictMode -Version Latest
 
+<#
+PowerShell setup script for the crypto-trading-bot project.
+What it does:
+ - Prompts for PostgreSQL connection details
+ - Creates the database if it doesn't exist
+ - Copies `.env.example` to `.env` (and fills DB values)
+ - Installs Python dependencies from `requirements.txt`
+ - Runs the migrations module to create tables
+ - Runs a quick connection test
+
+Run: Open PowerShell as Administrator (or normal if PostgreSQL accessible) and run:
+  powershell -ExecutionPolicy Bypass -File .\scripts\setup_database.ps1
+#>
+
+Set-StrictMode -Version Latest
+
 function Prompt-Default {
     param($Message, $Default)
     $value = Read-Host "$Message [$Default]"
@@ -47,8 +63,6 @@ $plainPass = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
 
 # Check if database exists
 $env:PGPASSWORD = $plainPass
-$checkDbCmd = "\"SELECT 1 FROM pg_database WHERE datname = '$dbName' LIMIT 1;\""
-$checkArgs = "-U`, $dbUser -h`, $dbHost -p`, $dbPort -c`, $checkDbCmd"
 
 # Use psql to check DB existence
 try {
@@ -59,7 +73,7 @@ try {
     exit 1
 }
 
-if ($exists.Trim() -eq '1') {
+if ($exists -and $exists.Trim() -eq '1') {
     Write-Host "Database '$dbName' already exists." -ForegroundColor Green
 } else {
     # Try createdb if available, else use psql CREATE DATABASE
@@ -79,20 +93,21 @@ if ($exists.Trim() -eq '1') {
 }
 
 # Copy .env.example to .env and replace DB values
-$envExample = Join-Path $PSScriptRoot '..\.env.example' | Resolve-Path
-$envFile = Join-Path $PSScriptRoot '..\.env' | Resolve-Path -ErrorAction SilentlyContinue
-if (-Not $envExample) {
+$envExamplePath = Join-Path $PSScriptRoot '..\ .env.example' -replace '\\ ','\\'
+$envExample = Join-Path $PSScriptRoot '..\.env.example'
+$envFile = Join-Path $PSScriptRoot '..\.env'
+if (-Not (Test-Path $envExample)) {
     Write-Host "Couldn't find .env.example at project root." -ForegroundColor Yellow
 } else {
     if (-Not (Test-Path $envFile)) {
-        Copy-Item $envExample -Destination (Join-Path $PSScriptRoot '..\.env') -Force
+        Copy-Item $envExample -Destination $envFile -Force
         Write-Host "Copied .env.example -> .env" -ForegroundColor Green
     } else {
         Write-Host ".env already exists; not overwriting." -ForegroundColor Yellow
     }
 
     # Update .env DB values (simple replace)
-    $envPath = Join-Path $PSScriptRoot '..\.env'
+    $envPath = $envFile
     (Get-Content $envPath) | ForEach-Object {
         $_ -replace '^DB_HOST=.*', "DB_HOST=$dbHost" -replace '^DB_PORT=.*', "DB_PORT=$dbPort" -replace '^DB_NAME=.*', "DB_NAME=$dbName" -replace '^DB_USER=.*', "DB_USER=$dbUser" -replace '^DB_PASSWORD=.*', "DB_PASSWORD=$plainPass"
     } | Set-Content $envPath
@@ -116,21 +131,31 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# Quick connection test
+# Quick connection test - write a temporary Python file and run it
 Write-Host "Testing DB connection..." -ForegroundColor Cyan
-python - <<'PY'
+$testPy = @'
 from src.database.connection import db
 try:
     db.connect()
     print('DB CONNECTED')
 except Exception as e:
-    print('DB CONNECTION FAILED:', e)
+    print('DB CONNECTION_FAILED:', e)
 finally:
     try:
         db.disconnect()
     except:
         pass
-PY
+'@
+
+$testPath = Join-Path $PSScriptRoot 'tmp_test_db.py'
+$testPy | Out-File -Encoding utf8 $testPath
+python $testPath
+$pyExit = $LASTEXITCODE
+Remove-Item $testPath -Force -ErrorAction SilentlyContinue
+if ($pyExit -ne 0) {
+    Write-Host "DB connection test failed (exit code $pyExit)." -ForegroundColor Red
+    exit 1
+}
 
 Write-Host "Setup script finished." -ForegroundColor Green
 Write-Host "If any step failed, paste the error here and I'll help debug." -ForegroundColor Yellow
