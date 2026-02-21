@@ -1,5 +1,4 @@
 import psycopg2
-from psycopg2 import sql
 from contextlib import contextmanager
 from src.config.index import Config
 import logging
